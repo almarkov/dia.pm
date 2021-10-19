@@ -5,8 +5,14 @@ sub wish_to_clarify_demands_for_table_triggers {
 	my ($i, $options) = @_;
 	
 	my ($phase, @events) = split /_/, $i -> {name};
-	
+
 	$i -> {phase} = uc $phase;
+
+	$i -> {prefix} = 'on_';
+	if ($i -> {phase} eq 'LAST') {
+		$i -> {phase}   = 'AFTER';
+		$i -> {prefix} = 'z_';
+	}
 	
 	$i -> {events} = [sort map {uc} @events];
 
@@ -18,7 +24,7 @@ sub wish_to_clarify_demands_for_table_triggers {
 	
 	length $tail < 61 or $tail = Digest::MD5::md5_hex ($tail);
 				
-	$i -> {global_name} = 'on_' . $tail;
+	$i -> {global_name} = $i -> {prefix} . $tail;
 
 }
 
@@ -37,7 +43,7 @@ sub wish_to_actually_create_table_triggers {
 		} if $i -> {body} !~ /^\s*DECLARE/gism;
 
 		my $events = join ' OR ', @{$i -> {events}};
-	
+
 		foreach my $sql (
 		
 			qq {

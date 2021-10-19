@@ -103,7 +103,7 @@ sub wish_to_clarify_demands_for_table_columns {
 sub wish_to_explore_existing_table_columns {
 
 	my ($options) = @_;
-		
+
 	$options -> {_cache} or sql_select_loop (q {
 	
 			SELECT 

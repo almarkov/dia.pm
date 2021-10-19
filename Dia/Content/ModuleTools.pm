@@ -102,7 +102,7 @@ sub require_model_scripts {
 		}
 	
 	}
-	
+
 	$model_update -> assert (
 											
 		default_columns => $DB_MODEL -> {default_columns},

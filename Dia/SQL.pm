@@ -136,7 +136,8 @@ sub check_systables {
 		__defaults
 		roles			
 		sessions		
-		users			
+		users
+		event_types			
 	)) {
 		$conf -> {systables} -> {$_} ||= $_;
 	}
@@ -307,7 +308,7 @@ sub sql_reconnect {
 	delete $SQL_VERSION -> {_};
 	
 	sql_version ();
-	
+	
 	if (my $f = $conf -> {sql_features}) {
 	
 		foreach (@$f) {
@@ -339,7 +340,7 @@ sub sql_reconnect {
 		}
 
 	}
-
+
 	__profile_out ('core.sql.reconnect', {label => $SQL_VERSION -> {string}});
 
 }   	
@@ -943,9 +944,9 @@ sub assert {
 	my ($self, %params) = @_;
 
 	local $preconf -> {core_debug_sql_do} = 1;
-	
+
 	my $tables = sql_assert_default_columns (Storable::dclone ($params {tables}), \%params);
-			
+
 	my $objects = [\my @tables, \my @views, \my @functions];
 
 	while (my ($name, $object) = each %$tables) {
@@ -967,7 +968,180 @@ sub assert {
 	if (@tables > 0) {
 
 		wish (tables => Storable::dclone \@tables, {});
-		
+
+		my (@version_tables, @event_tables, @event_type_tables);
+
+		foreach my $table (@tables) {
+
+			$table_event_types = $table if $table -> {name} eq 'event_types';  
+
+			if (exists $table -> {versioning})  {
+
+				my $object = en_unplural($table -> {name});
+
+				my $version_table = Storable::dclone $table;
+
+				delete $version_table -> {versioning};
+				delete $version_table -> {triggers};
+
+				$version_table -> {name}  = $object . '_versions';
+				$version_table -> {label} = $table -> {label} . ' - версии';				
+
+				my %excluded_columns = map {$_ => 1}  ('uuid', keys %{$table -> {versioning} -> {excluded_columns}});
+
+				foreach (keys %{$version_table -> {columns}}) {
+					delete $version_table -> {columns} -> {$_} if $excluded_columns{$_};
+				}
+
+				my @version_table_columns = grep { $_ ne 'id' } keys %{$version_table -> {columns}};
+
+				foreach my $key (keys %{$table -> {keys}}) {
+					foreach (split (',', $table -> {keys}-> {$key} )) {
+						delete $version_table ->  {keys} -> {$key} if $excluded_columns{$_};
+					}
+				}
+
+				$version_table -> {columns} -> {'id_'.$object} = {
+					'FIELD_OPTIONS' => {
+						'data_source' => $table -> {name}
+					},
+					'TYPE' => '('.$table -> {name}.')',
+					'TYPE_NAME' => 'int',
+					'ref' => $table -> {name},
+				};
+
+				$version_table -> {columns} -> {'id_'.$object.'_event'} = {
+					'FIELD_OPTIONS' => {
+						'data_source' =>  $object . '_events',
+					},
+					'TYPE' => '('.$object . '_events'.')',
+					'TYPE_NAME' => 'int',
+					'ref' => $object . '_events',
+				};
+
+
+				push @version_tables, $version_table;
+
+
+				my $event_table = {};
+				$event_table -> {name}	= $object . '_events';
+				$event_table -> {label}   = $table -> {label} . ' - события';
+				$event_table -> {columns} = {
+					fake => {
+						'TYPE_NAME' => 'int'
+					},
+					id => {
+						'TYPE_NAME' => 'int',
+						'_EXTRA' => 'auto_increment',
+						'_PK' => 1
+					},
+					dt => {
+						'FIELD_OPTIONS' => {
+							'type' => 'timestamp'
+						},
+						'TYPE' => 'timestamp',
+						'TYPE_NAME' => 'timestamp'
+					},
+					'id_'.$object => {
+						'FIELD_OPTIONS' => {
+							'data_source' => $table -> {name}
+						},
+						'TYPE' => '('.$table -> {name}.')',
+						'TYPE_NAME' => 'int',
+						'ref' => $table -> {name},
+					},
+					id_user => {
+						'FIELD_OPTIONS' => {
+							'data_source' => 'users'
+						 },
+						'TYPE' => '(users)',
+						'TYPE_NAME' => 'int',
+						'ref' => 'users'
+					},
+					id_event_type => {
+						'FIELD_OPTIONS' => {
+							'data_source' => 'event_types'
+						},
+					   'TYPE' => '(event_types)',
+					   'TYPE_NAME' => 'int',
+					   'ref' => 'event_types'
+					},
+					note => {
+						'FIELD_OPTIONS' => {
+							'type' => 'text'
+						},
+						'TYPE' => 'text',
+						'TYPE_NAME' => 'text'
+					},
+				};
+
+				foreach my $emit_column (keys %{$table -> {versioning} -> {emit}}) {
+
+					my $emit_table = $table -> {versioning} -> {emit} -> {$emit_column};
+
+					$event_table -> {columns} -> {$emit_column} = {
+						'FIELD_OPTIONS' => {
+							'data_source' => $emit_table,
+						},
+						'TYPE' => '('.$emit_table.')',
+						'TYPE_NAME' => 'int',
+						'ref' => $emit_table,
+					};
+
+					$event_table -> {keys} -> {$emit_column} = $emit_column;
+
+				}
+
+				foreach my $event (keys %{$table -> {versioning} -> {event_types}}) {
+
+					my $event_label = $table -> {versioning} -> {event_types} -> {$event} -> {label};
+
+					push @event_types_data, {
+						fake   => 0,
+						action => $event,
+						type   => $table -> {name},
+						label  => $event_label,
+						name   => $event . '_' . $table -> {name},
+					};
+
+				}
+
+				push @event_tables, $event_table;
+
+
+
+				my $insert_expr = join (',', @version_table_columns);
+				my $values_expr = join (',', map { 'NEW.'.$_ } @version_table_columns);
+				$table -> {triggers} -> {last_insert_update} = qq {
+					INSERT INTO ${object}_versions (
+
+						id_${object}_event,
+						id_${object},
+
+						$insert_expr
+					)
+					VALUES (
+
+						current_setting ('pmso.id_event')::int,
+						NEW.id,
+
+						$values_expr
+					);
+
+					RETURN NEW;
+				};
+			}
+		}
+
+		wish (tables => Storable::dclone \@version_tables, {});
+		push @tables, @version_tables;
+
+		wish (tables => Storable::dclone \@event_tables, {});
+		push @tables, @event_tables;
+
+
+		$table_event_types -> {data} = \@event_types_data;
+
 		my $col_options = {};
 		my $key_options = {};
 		my $trg_options = {};
@@ -1101,7 +1275,7 @@ sub wish {
 	foreach my $i (@$items) { &{"wish_to_clarify_demands_for_$type"} ($i, $options) }
 	
 	my @key = @{$options -> {key}};
-	
+	
 	my @layers = ();
 	
 	my %key_cnt = ();
@@ -1118,7 +1292,7 @@ sub wish {
 	@layers > 0 or @layers = ({});
 
 	foreach my $layer (@layers) {
-	
+
 		my $existing = &{"wish_to_explore_existing_$type"} ($options);
 
 		my $todo = {};
@@ -1231,7 +1405,7 @@ sub sql_do_update {
 	sql_do ("UPDATE " . $db -> quote_identifier ($table) . " SET " . (join ', ', @q) . " WHERE id = ?", @p, $id);
 
 }
-
+
 ################################################################################
 
 sub sql_check_seq {}
