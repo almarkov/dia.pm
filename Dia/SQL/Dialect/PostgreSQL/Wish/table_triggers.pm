@@ -9,11 +9,16 @@ sub wish_to_clarify_demands_for_table_triggers {
 	$i -> {phase} = uc $phase;
 
 	$i -> {prefix} = 'on_';
+
 	if ($i -> {phase} eq 'LAST') {
 		$i -> {phase}   = 'AFTER';
-		$i -> {prefix} = 'z_';
+		$i -> {prefix} = 'zz_';
 	}
-	
+	elsif ($i -> {phase} eq 'FIRST') {
+		$i -> {phase}   = 'BEFORE';
+		$i -> {prefix} = 'aa_';
+	}
+
 	$i -> {events} = [sort map {uc} @events];
 
 	my $tail = lc (join '_', (
